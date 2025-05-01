@@ -93,7 +93,7 @@
   <script>
     // UTC parser for timestamps like "2020-04-08T08:35:00Z"
     const parseUTC = d3.utcParse("%Y-%m-%dT%H:%M:%SZ");
-    const csvFile = "https://raw.githubusercontent.com/LongDWang/DATA/refs/heads/main/reports48.csv";  // adjust to your CSV path
+    const csvFile = "./reports48.csv";  // adjust to your CSV path
 
     const metricColors = {
       SewerAndWater:  "#ff7f0e",
@@ -185,7 +185,7 @@
 
     // Load and color the SVG map
     function loadMap(){
-      d3.xml("https://raw.githubusercontent.com/LongDWang/DATA/refs/heads/main/city-zoning.svg").then(doc => {
+      d3.xml("./city-zoning.svg").then(doc => {
         mapBox.node().appendChild(doc.documentElement);
         const svgMap = mapBox.select("svg"),
               colorM = d3.scaleSequential(d3.interpolateReds).domain([0,10]);
