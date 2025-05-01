@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Earthquake ShakeIntensity Heatmap & Line Chart (UTC)</title>
+  <!-- D3.js v7 -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f9f9f9; }
+    h1,h2,h3,p { text-align: center; margin: 5px 0; }
+
+    /* Map container */
+    #map-box { width:1100px; height:900px; margin:0 auto 20px; border:1px solid #ccc; background:#fff; position:relative; }
+    #map-box svg { width:100%; height:auto; }
+    .highlight { stroke:red; stroke-width:4px; }
+
+    /* Tooltip */
+    #tooltip {
+      position:absolute; background:rgba(0,0,0,0.7); color:#fff;
+      padding:6px 10px; font-size:14px; border-radius:4px;
+      pointer-events:none; display:none; max-width:200px;
+    }
+
+    /* Heatmap */
+    #heatmap-container {
+      width:800px; margin:0 auto 30px; border:1px solid #ccc;
+      background:#fff; padding:10px;
+    }
+    #heatmap-maptitle { font-size:20px; margin-bottom:5px; }
+    #heatmap-title    { font-size:18px; margin-bottom:10px; }
+    #heatmap-grid     { display:flex; gap:10px; justify-content:space-between; }
+    #three-rows       { display:flex; flex-direction:column; gap:5px; }
+    .heatmap-row      { display:flex; align-items:center; gap:1px; }
+    .row-label        { width:80px; text-align:right; margin-right:5px; font-size:12px; }
+    .heat-cell        { width:3px; height:25px; border:1px solid #eee; }
+    #legend           { display:flex; flex-direction:column; align-items:center; }
+    #legend svg       { width:20px; height:120px; }
+    #heatmap-legend-extra {
+      display:flex; gap:10px; justify-content:center; margin-top:10px; font-size:12px;
+    }
+    .legend-box       { display:flex; align-items:center; gap:5px; }
+    .box-sample       { width:16px; height:16px; border:1px solid #999; }
+
+    /* Line chart */
+    #linechart-container {
+      width:800px; margin:0 auto 40px; border:1px solid #ccc;
+      background:#fff; padding:10px;
+    }
+    #metric-panel { text-align:center; margin-bottom:10px; }
+    #metric-panel label { margin:0 8px; font-size:13px; cursor:pointer; }
+    #linechart    { width:100%; height:320px; }
+  </style>
+</head>
+<body>
+
+  <h1>Earthquake ShakeIntensity Heatmap</h1>
+  <p>Click a map region to highlight it and show its heatmap and line chart below (timestamps in UTC).</p>
+
+  <div id="map-box"></div>
+  <div id="tooltip"></div>
+
+  <!-- Heatmap -->
+  <div id="heatmap-container">
+    <h3 id="heatmap-maptitle">ShakeIntensity</h3>
+    <h2 id="heatmap-title">Region: 1.Palace Hills</h2>
+    <div id="heatmap-grid">
+      <div id="three-rows"></div>
+      <div id="legend"></div>
+    </div>
+    <div id="heatmap-legend-extra">
+      <div class="legend-box">
+        <div class="box-sample" style="background:lightgray;"></div><span>Missing data</span>
+      </div>
+      <div class="legend-box">
+        <div class="box-sample" style="background:#ffcc99;"></div><span>Has data</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Line Chart -->
+  <div id="linechart-container">
+    <h2 id="linechart-title">Line Chart: SewerAndWater</h2>
+    <div id="metric-panel">
+      <label><input type="radio" name="metric" value="SewerAndWater" checked> SewerAndWater</label>
+      <label><input type="radio" name="metric" value="Power"> Power</label>
+      <label><input type="radio" name="metric" value="RoadsAndBridges"> RoadsAndBridges</label>
+      <label><input type="radio" name="metric" value="Medical"> Medical</label>
+      <label><input type="radio" name="metric" value="Buildings"> Buildings</label>
+    </div>
+    <svg id="linechart"></svg>
+  </div>
+
+  <script>
+    // UTC parser for timestamps like "2020-04-08T08:35:00Z"
+    const parseUTC = d3.utcParse("%Y-%m-%dT%H:%M:%SZ");
+    const csvFile = "https://raw.githubusercontent.com/LongDWang/DATA/refs/heads/main/reports48.csv";  // adjust to your CSV path
+
+    const metricColors = {
+      SewerAndWater:  "#ff7f0e",
+      Power:          "#2ca02c",
+      RoadsAndBridges:"#d62728",
+      Medical:        "#9467bd",
+      Buildings:      "#8c564b"
+    };
+
+    // DOM references
+    const mapBox       = d3.select("#map-box"),
+          tooltip      = d3.select("#tooltip"),
+          heatmapTitle = d3.select("#heatmap-title"),
+          threeRowsDiv = d3.select("#three-rows"),
+          legendDiv    = d3.select("#legend"),
+          lineTitle    = d3.select("#linechart-title"),
+          lineSvg      = d3.select("#linechart");
+
+    // Generate 5‑min slots for the heatmap
+    function genSlots(){
+      const slots = [];
+      let d = new Date(Date.UTC(2020,3,8,0,0,0));
+      while(d.getUTCDate()===8){
+        slots.push(new Date(d));
+        d.setUTCMinutes(d.getUTCMinutes()+5);
+      }
+      return slots;
+    }
+    const allSlots = genSlots();
+    const rows = [
+      allSlots.slice(0,96),
+      allSlots.slice(96,192),
+      allSlots.slice(192,288)
+    ];
+    const rowLabels = ["00:00–07:59","08:00–15:59","16:00–23:59"];
+
+    let dataAll = [], regionAvg = {};
+
+    // Load and parse CSV
+    d3.csv(csvFile).then(raw => {
+      raw.forEach(d => {
+        d.time = parseUTC(d.time);
+        d.ShakeIntensity   = +d.ShakeIntensity;
+        d.SewerAndWater    = d.SewerAndWater   === "" ? null : +d.SewerAndWater;
+        d.Power            = d.Power           === "" ? null : +d.Power;
+        d.RoadsAndBridges  = d.RoadsAndBridges === "" ? null : +d.RoadsAndBridges;
+        d.Medical          = d.Medical         === "" ? null : +d.Medical;
+        d.Buildings        = d.Buildings       === "" ? null : +d.Buildings;
+      });
+
+      // Keep only April 8 data
+      dataAll = raw.filter(d =>
+        d.time &&
+        d.time.getUTCMonth()===3 &&
+        d.time.getUTCDate()===8
+      );
+
+      // Precompute average ShakeIntensity per region
+      d3.groups(dataAll, d=>d.location)
+        .forEach(([loc, arr]) => {
+          regionAvg[loc] = d3.mean(arr, d=>d.ShakeIntensity) || 0;
+        });
+
+      buildLegend();
+      loadMap();
+      setupMetricListener();
+
+      // Initial render
+      renderHeatmap("1");
+      renderLine("1", "SewerAndWater");
+    });
+
+    // Build the heatmap legend (0–10)
+    function buildLegend(){
+      const w=20, h=120;
+      const svg = legendDiv.append("svg").attr("width", w).attr("height", h);
+      const defs = svg.append("defs");
+      const lg = defs.append("linearGradient")
+        .attr("id","lg").attr("x1","0%").attr("y1","0%")
+                     .attr("x2","0%").attr("y2","100%");
+      lg.append("stop").attr("offset","0%").attr("stop-color", d3.interpolateYlOrRd(1));
+      lg.append("stop").attr("offset","100%").attr("stop-color", d3.interpolateYlOrRd(0));
+      svg.append("rect")
+        .attr("x",0).attr("y",0).attr("width",w).attr("height",h)
+        .style("fill","url(#lg)");
+      svg.append("text").attr("x",w+4).attr("y",12).text("10").style("font-size","10px");
+      svg.append("text").attr("x",w+4).attr("y",h-2).text("0").style("font-size","10px");
+    }
+
+    // Load and color the SVG map
+    function loadMap(){
+      d3.xml("https://raw.githubusercontent.com/LongDWang/DATA/refs/heads/main/city-zoning.svg").then(doc => {
+        mapBox.node().appendChild(doc.documentElement);
+        const svgMap = mapBox.select("svg"),
+              colorM = d3.scaleSequential(d3.interpolateReds).domain([0,10]);
+
+        svgMap.selectAll("path")
+          .attr("fill", function(){
+            const loc = (d3.select(this).attr("id")||"").split(".")[0];
+            return colorM(regionAvg[loc] || 0);
+          })
+          .attr("stroke","#444").attr("stroke-width",1)
+          .style("cursor","pointer")
+          .on("mouseover", ()=>tooltip.style("display","block").html("Click for details"))
+          .on("mousemove", e=>tooltip.style("left",(e.pageX+10)+"px").style("top",(e.pageY+10)+"px"))
+          .on("mouseout", ()=>tooltip.style("display","none"))
+          .on("click", function(){
+            svgMap.selectAll("path").classed("highlight", false);
+            d3.select(this).classed("highlight", true);
+            const raw = d3.select(this).attr("id")||"",
+                  loc = raw.split(".")[0];
+            heatmapTitle.text("Region: " + raw);
+            renderHeatmap(loc);
+            const m = document.querySelector('input[name="metric"]:checked').value;
+            renderLine(loc, m);
+          });
+      });
+    }
+
+    // Render the heatmap for one region
+    function renderHeatmap(loc){
+      const mapVal = new Map();
+      dataAll.filter(d=>d.location===loc)
+             .forEach(d => mapVal.set(d3.utcFormat("%H:%M")(d.time), d.ShakeIntensity));
+
+      const cellScale = d3.scaleSequential(d3.interpolateYlOrRd).domain([0,10]);
+      threeRowsDiv.html("");
+      rows.forEach((row,i) => {
+        const rowDiv = threeRowsDiv.append("div").attr("class","heatmap-row");
+        rowDiv.append("div").attr("class","row-label").text(rowLabels[i]);
+        row.forEach(t => {
+          const key = d3.utcFormat("%H:%M")(t),
+                v   = mapVal.has(key) ? mapVal.get(key) : null,
+                c   = v != null ? cellScale(v) : "lightgray";
+          rowDiv.append("div").attr("class","heat-cell").style("background", c);
+        });
+      });
+    }
+
+    // Render the line chart in UTC
+    function renderLine(loc, metric){
+      const data = dataAll
+        .filter(d=>d.location===loc && d[metric]!=null)
+        .sort((a,b)=>a.time - b.time);
+
+      lineSvg.html("");
+      const W=800, H=320, M={ top:20, right:20, bottom:60, left:50 };
+      const g = lineSvg
+        .attr("viewBox",[0,0,W,H])
+        .append("g").attr("transform", `translate(${M.left},${M.top})`);
+
+      // X axis: UTC time
+      const x = d3.scaleUtc()
+        .domain(d3.extent(data, d=>d.time))
+        .range([0, W - M.left - M.right]);
+
+      g.append("g")
+        .attr("transform", `translate(0,${H - M.top - M.bottom})`)
+        .call(d3.axisBottom(x).ticks(6).tickFormat(d3.utcFormat("%H:%M")))
+        .selectAll("text")
+          .attr("transform","rotate(-45)")
+          .style("text-anchor","end");
+
+      // Y axis: from 0 to max value
+      const maxVal = d3.max(data, d=>d[metric]);
+      const y = d3.scaleLinear()
+        .domain([0, maxVal]).nice()
+        .range([H - M.top - M.bottom, 0]);
+
+      g.append("g").call(d3.axisLeft(y).ticks(5));
+
+      // Line generator
+      const lineGen = d3.line()
+        .defined(d => d[metric] != null)
+        .x(d => x(d.time))
+        .y(d => y(d[metric]));
+
+      // Draw the line
+      g.append("path")
+        .datum(data)
+        .attr("fill","none")
+        .attr("stroke", metricColors[metric])
+        .attr("stroke-width",2)
+        .attr("d", lineGen);
+
+      // Draw the points
+      g.selectAll("circle")
+        .data(data.filter(d=>d[metric]!=null))
+        .join("circle")
+          .attr("cx", d=> x(d.time))
+          .attr("cy", d=> y(d[metric]))
+          .attr("r", 3)
+          .attr("fill", metricColors[metric]);
+
+      lineTitle.text(`Line Chart: ${metric}`);
+    }
+
+    // Radio-button listener
+    function setupMetricListener(){
+      d3.selectAll('input[name="metric"]').on("change", function(){
+        const m = this.value;
+        const loc = heatmapTitle.text().split(" ")[1].split(".")[0];
+        renderLine(loc, m);
+      });
+    }
+  </script>
+</body>
+</html>
